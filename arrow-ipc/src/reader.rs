@@ -1479,6 +1479,32 @@ impl<R: Read + Seek> RecordBatchReader for FileReader<R> {
     }
 }
 
+/// Read a schema from a single Arrow IPC stream schema message.
+///
+/// This reads only the first IPC message and expects that message to be a
+/// schema.
+pub fn read_stream_schema<R: Read>(reader: R) -> Result<SchemaRef, ArrowError> {
+    let mut msg_reader = MessageReader::new(reader);
+    let message = msg_reader.maybe_next()?;
+    let Some((message, _)) = message else {
+        return Err(ArrowError::IpcError(
+            "Expected schema message, found empty stream.".to_string(),
+        ));
+    };
+
+    if message.header_type() != Message::MessageHeader::Schema {
+        return Err(ArrowError::IpcError(format!(
+            "Expected a schema as the first message in the stream, got: {:?}",
+            message.header_type()
+        )));
+    }
+
+    let schema = message.header_as_schema().ok_or_else(|| {
+        ArrowError::ParseError("Failed to parse schema from message header".to_string())
+    })?;
+    Ok(Arc::new(crate::convert::fb_to_schema(schema)))
+}
+
 /// Arrow Stream Reader
 ///
 /// Reads Arrow [`RecordBatch`]es from bytes in the [IPC Streaming Format].

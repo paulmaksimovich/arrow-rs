@@ -22,3 +22,4 @@ than in integration tests or unit tests for a specific module.
 */
 mod delta_dictionary;
 mod external_schema_stream;
+mod schema_stream;

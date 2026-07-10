@@ -1563,6 +1563,38 @@ impl<W: Write> RecordBatchWriter for FileWriter<W> {
     }
 }
 
+/// Write a schema as a single Arrow IPC stream schema message.
+///
+/// This writes only the schema message. It does not write any record batches or
+/// the stream end marker.
+pub fn write_stream_schema<W: Write>(writer: &mut W, schema: &Schema) -> Result<(), ArrowError> {
+    write_stream_schema_with_options(writer, schema, &IpcWriteOptions::default())
+}
+
+/// Write a schema as a single Arrow IPC stream schema message with
+/// [`IpcWriteOptions`].
+///
+/// This writes only the schema message. It does not write any record batches or
+/// the stream end marker.
+pub fn write_stream_schema_with_options<W: Write>(
+    writer: &mut W,
+    schema: &Schema,
+    write_options: &IpcWriteOptions,
+) -> Result<(), ArrowError> {
+    ensure_supported_ipc_schema(schema)?;
+
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(false);
+    let encoded_message = data_gen.schema_to_bytes_with_dictionary_tracker(
+        schema,
+        &mut dictionary_tracker,
+        write_options,
+    );
+    write_message(&mut *writer, encoded_message, write_options)?;
+    writer.flush()?;
+    Ok(())
+}
+
 /// Arrow Stream Writer
 ///
 /// Writes Arrow [`RecordBatch`]es to bytes using the [IPC Streaming Format].
