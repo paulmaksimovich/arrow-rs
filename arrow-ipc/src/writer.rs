@@ -1855,6 +1855,7 @@ impl<W: Write> RecordBatchWriter for StreamWriter<W> {
 ///
 /// This is useful when the schema is managed separately from the batch stream.
 pub struct ExternalSchemaStreamWriter<W> {
+    schema: SchemaRef,
     inner: StreamWriter<W>,
 }
 
@@ -1903,6 +1904,7 @@ impl<W: Write> ExternalSchemaStreamWriter<W> {
         );
 
         Ok(Self {
+            schema: Arc::new(schema.clone()),
             inner: StreamWriter {
                 writer,
                 write_options,
@@ -1917,6 +1919,12 @@ impl<W: Write> ExternalSchemaStreamWriter<W> {
     /// Write a record batch to the stream.
     pub fn write(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
         self.inner.write(batch)
+    }
+
+    /// Write an array batch to the stream using the externally supplied schema.
+    pub fn write_arrays(&mut self, columns: Vec<ArrayRef>) -> Result<(), ArrowError> {
+        let batch = RecordBatch::try_new(self.schema.clone(), columns)?;
+        self.inner.write(&batch)
     }
 
     /// Write continuation bytes, and mark the stream as done.

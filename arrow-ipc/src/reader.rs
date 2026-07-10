@@ -1910,19 +1910,20 @@ impl<R: Read> ExternalSchemaStreamReader<R> {
         self.inner = unsafe { self.inner.with_skip_validation(skip_validation) };
         self
     }
-}
 
-impl<R: Read> Iterator for ExternalSchemaStreamReader<R> {
-    type Item = Result<RecordBatch, ArrowError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.maybe_next().transpose()
+    fn maybe_next_arrays(&mut self) -> Result<Option<Vec<ArrayRef>>, ArrowError> {
+        Ok(self.inner.maybe_next()?.map(|batch| {
+            let (_, columns, _) = batch.into_parts();
+            columns
+        }))
     }
 }
 
-impl<R: Read> RecordBatchReader for ExternalSchemaStreamReader<R> {
-    fn schema(&self) -> SchemaRef {
-        self.inner.schema()
+impl<R: Read> Iterator for ExternalSchemaStreamReader<R> {
+    type Item = Result<Vec<ArrayRef>, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.maybe_next_arrays().transpose()
     }
 }
 

@@ -33,7 +33,7 @@ fn external_schema_stream_round_trip() -> Result<(), ArrowError> {
     let mut bytes = Vec::new();
     {
         let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.as_ref())?;
-        writer.write(&batch)?;
+        writer.write_arrays(batch.columns().to_vec())?;
         writer.finish()?;
     }
 
@@ -41,14 +41,16 @@ fn external_schema_stream_round_trip() -> Result<(), ArrowError> {
 
     let reader =
         ExternalSchemaStreamReader::try_new(Cursor::new(bytes.clone()), schema.clone(), None)?;
-    let batches = reader.collect::<Result<Vec<_>, _>>()?;
+    let batches = reader
+        .map(|arrays| RecordBatch::try_new(schema.clone(), arrays?))
+        .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(batches, vec![batch]);
 
     let reader = ExternalSchemaStreamReader::try_new(Cursor::new(bytes), schema, Some(vec![1]))?;
     let projected = reader.collect::<Result<Vec<_>, _>>()?;
     assert_eq!(projected.len(), 1);
-    assert_eq!(projected[0].num_columns(), 1);
-    assert_eq!(projected[0].schema().field(0).name(), "b");
+    assert_eq!(projected[0].len(), 1);
+    assert_eq!(projected[0][0].data_type(), &DataType::Utf8);
 
     Ok(())
 }
@@ -70,14 +72,16 @@ fn external_schema_stream_round_trip_dictionary_batch() -> Result<(), ArrowError
     let mut bytes = Vec::new();
     {
         let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.as_ref())?;
-        writer.write(&batch)?;
+        writer.write_arrays(batch.columns().to_vec())?;
         writer.finish()?;
     }
 
     assert!(StreamReader::try_new(Cursor::new(bytes.clone()), None).is_err());
 
     let reader = ExternalSchemaStreamReader::try_new(Cursor::new(bytes), schema, None)?;
-    let batches = reader.collect::<Result<Vec<_>, _>>()?;
+    let batches = reader
+        .map(|arrays| RecordBatch::try_new(batch.schema(), arrays?))
+        .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(batches, vec![batch]);
 
     Ok(())
