@@ -1787,6 +1787,119 @@ impl<R: Read> RecordBatchReader for StreamReader<R> {
     }
 }
 
+/// Arrow stream reader for IPC streams whose schema is supplied externally.
+///
+/// This reader expects the underlying stream to contain only dictionary batches,
+/// record batches, and the stream end marker. Unlike [`StreamReader`], it does
+/// not read a schema message from the stream.
+///
+/// This is useful when the schema is managed separately from the batch stream.
+pub struct ExternalSchemaStreamReader<R> {
+    inner: StreamReader<R>,
+}
+
+impl<R> fmt::Debug for ExternalSchemaStreamReader<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        f.debug_struct("ExternalSchemaStreamReader<R>")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<R: Read> ExternalSchemaStreamReader<BufReader<R>> {
+    /// Try to create a new external-schema stream reader with the reader
+    /// wrapped in a [`BufReader`].
+    ///
+    /// See [`ExternalSchemaStreamReader::try_new`] for an unbuffered version.
+    pub fn try_new_buffered(
+        reader: R,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self, ArrowError> {
+        Self::try_new(BufReader::new(reader), schema, projection)
+    }
+}
+
+impl<R: Read> ExternalSchemaStreamReader<R> {
+    /// Try to create a new external-schema stream reader.
+    ///
+    /// The supplied `schema` is used to decode dictionary and record batch
+    /// messages. The first message read from `reader` is expected to be a
+    /// dictionary batch, record batch, or stream end marker.
+    pub fn try_new(
+        reader: R,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self, ArrowError> {
+        let projection = match projection {
+            Some(projection_indices) => {
+                let projected = schema.project(&projection_indices)?;
+                Some((projection_indices, projected))
+            }
+            _ => None,
+        };
+
+        Ok(Self {
+            inner: StreamReader {
+                reader: MessageReader::new(reader),
+                schema,
+                dictionaries_by_id: HashMap::new(),
+                finished: false,
+                projection,
+                skip_validation: UnsafeFlag::new(),
+            },
+        })
+    }
+
+    /// Return the externally supplied schema.
+    pub fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    /// Check if the stream is finished.
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Gets a reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        self.inner.get_ref()
+    }
+
+    /// Gets a mutable reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader.
+    pub fn get_mut(&mut self) -> &mut R {
+        self.inner.get_mut()
+    }
+
+    /// Specifies if validation should be skipped when reading data (defaults to `false`).
+    ///
+    /// # Safety
+    ///
+    /// See [`FileDecoder::with_skip_validation`].
+    pub unsafe fn with_skip_validation(mut self, skip_validation: bool) -> Self {
+        self.inner = unsafe { self.inner.with_skip_validation(skip_validation) };
+        self
+    }
+}
+
+impl<R: Read> Iterator for ExternalSchemaStreamReader<R> {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.maybe_next().transpose()
+    }
+}
+
+impl<R: Read> RecordBatchReader for ExternalSchemaStreamReader<R> {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 /// Representation of a fully parsed IpcMessage from the underlying stream.
 /// Parsing this kind of message is done by higher level constructs such as
 /// [`StreamReader`], because fully interpreting the messages into a record

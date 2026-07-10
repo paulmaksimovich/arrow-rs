@@ -1815,6 +1815,123 @@ impl<W: Write> RecordBatchWriter for StreamWriter<W> {
     }
 }
 
+/// Arrow stream writer for IPC streams whose schema is supplied externally.
+///
+/// This writer emits dictionary batches, record batches, and the stream end
+/// marker, but does not emit the schema message normally written by
+/// [`StreamWriter`].
+///
+/// This is useful when the schema is managed separately from the batch stream.
+pub struct ExternalSchemaStreamWriter<W> {
+    inner: StreamWriter<W>,
+}
+
+impl<W: Write> ExternalSchemaStreamWriter<BufWriter<W>> {
+    /// Try to create a new external-schema stream writer with the writer
+    /// wrapped in a [`BufWriter`].
+    ///
+    /// See [`ExternalSchemaStreamWriter::try_new`] for an unbuffered version.
+    pub fn try_new_buffered(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+        Self::try_new(BufWriter::new(writer), schema)
+    }
+}
+
+impl<W: Write> ExternalSchemaStreamWriter<W> {
+    /// Try to create a new external-schema writer.
+    ///
+    /// This initializes the same schema-dependent dictionary state as
+    /// [`StreamWriter::try_new`], but does not write the schema message to the
+    /// underlying stream.
+    pub fn try_new(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+        let write_options = IpcWriteOptions::default();
+        Self::try_new_with_options(writer, schema, write_options)
+    }
+
+    /// Try to create a new external-schema writer with [`IpcWriteOptions`].
+    ///
+    /// This initializes the same schema-dependent dictionary state as
+    /// [`StreamWriter::try_new_with_options`], but does not write the schema
+    /// message to the underlying stream.
+    pub fn try_new_with_options(
+        writer: W,
+        schema: &Schema,
+        write_options: IpcWriteOptions,
+    ) -> Result<Self, ArrowError> {
+        ensure_supported_ipc_schema(schema)?;
+
+        let data_gen = IpcDataGenerator::default();
+        let mut dictionary_tracker = DictionaryTracker::new(false);
+
+        // Seed dictionary tracking exactly like schema encoding does, while
+        // keeping the schema message outside of this batch stream.
+        let _encoded_message = data_gen.schema_to_bytes_with_dictionary_tracker(
+            schema,
+            &mut dictionary_tracker,
+            &write_options,
+        );
+
+        Ok(Self {
+            inner: StreamWriter {
+                writer,
+                write_options,
+                finished: false,
+                dictionary_tracker,
+                data_gen,
+                ipc_write_context: IpcWriteContext::default(),
+            },
+        })
+    }
+
+    /// Write a record batch to the stream.
+    pub fn write(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
+        self.inner.write(batch)
+    }
+
+    /// Write continuation bytes, and mark the stream as done.
+    pub fn finish(&mut self) -> Result<(), ArrowError> {
+        self.inner.finish()
+    }
+
+    /// Gets a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        self.inner.get_ref()
+    }
+
+    /// Gets a mutable reference to the underlying writer.
+    ///
+    /// It is inadvisable to directly write to the underlying writer.
+    pub fn get_mut(&mut self) -> &mut W {
+        self.inner.get_mut()
+    }
+
+    /// Flush the underlying writer.
+    ///
+    /// Both the [`BufWriter`] and the underlying writer are flushed.
+    pub fn flush(&mut self) -> Result<(), ArrowError> {
+        self.inner.flush()
+    }
+
+    /// Unwraps the underlying writer.
+    ///
+    /// The writer is flushed and the stream is finished before returning.
+    pub fn into_inner(mut self) -> Result<W, ArrowError> {
+        if !self.inner.finished {
+            self.finish()?;
+        }
+        Ok(self.inner.writer)
+    }
+}
+
+impl<W: Write> RecordBatchWriter for ExternalSchemaStreamWriter<W> {
+    fn write(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
+        self.write(batch)
+    }
+
+    fn close(mut self) -> Result<(), ArrowError> {
+        self.finish()
+    }
+}
+
 /// Stores the encoded data, which is an crate::Message, and optional Arrow data
 pub struct EncodedData {
     /// An encoded crate::Message
