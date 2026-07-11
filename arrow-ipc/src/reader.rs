@@ -1479,6 +1479,232 @@ impl<R: Read + Seek> RecordBatchReader for FileReader<R> {
     }
 }
 
+/// Build an Arrow [`ExternalSchemaFileReader`] with custom options.
+#[derive(Debug)]
+pub struct ExternalSchemaFileReaderBuilder {
+    /// Schema supplied externally rather than read from the IPC file footer.
+    schema: SchemaRef,
+    /// Optional projection for which columns to load (zero-based column indices)
+    projection: Option<Vec<usize>>,
+    /// Passed through to construct [`VerifierOptions`]
+    max_footer_fb_tables: usize,
+    /// Passed through to construct [`VerifierOptions`]
+    max_footer_fb_depth: usize,
+}
+
+impl ExternalSchemaFileReaderBuilder {
+    /// Options for creating a new [`ExternalSchemaFileReader`].
+    ///
+    /// To convert a builder into a reader, call [`ExternalSchemaFileReaderBuilder::build`].
+    pub fn new(schema: SchemaRef) -> Self {
+        let verifier_options = VerifierOptions::default();
+        Self {
+            schema,
+            max_footer_fb_tables: verifier_options.max_tables,
+            max_footer_fb_depth: verifier_options.max_depth,
+            projection: None,
+        }
+    }
+
+    /// Optional projection for which columns to load (zero-based column indices).
+    pub fn with_projection(mut self, projection: Vec<usize>) -> Self {
+        self.projection = Some(projection);
+        self
+    }
+
+    /// Flatbuffers option for parsing the footer. Controls the max number of fields and
+    /// metadata key-value pairs that can be parsed from the footer.
+    pub fn with_max_footer_fb_tables(mut self, max_footer_fb_tables: usize) -> Self {
+        self.max_footer_fb_tables = max_footer_fb_tables;
+        self
+    }
+
+    /// Flatbuffers option for parsing the footer. Controls the max depth for footer metadata.
+    pub fn with_max_footer_fb_depth(mut self, max_footer_fb_depth: usize) -> Self {
+        self.max_footer_fb_depth = max_footer_fb_depth;
+        self
+    }
+
+    /// Build [`ExternalSchemaFileReader`] with given reader.
+    pub fn build<R: Read + Seek>(
+        self,
+        mut reader: R,
+    ) -> Result<ExternalSchemaFileReader<R>, ArrowError> {
+        // Space for ARROW_MAGIC (6 bytes) and length (4 bytes)
+        let mut buffer = [0; 10];
+        reader.seek(SeekFrom::End(-10))?;
+        reader.read_exact(&mut buffer)?;
+
+        let footer_len = read_footer_length(buffer)?;
+
+        // read footer
+        let mut footer_data = vec![0; footer_len];
+        reader.seek(SeekFrom::End(-10 - footer_len as i64))?;
+        reader.read_exact(&mut footer_data)?;
+
+        let verifier_options = VerifierOptions {
+            max_tables: self.max_footer_fb_tables,
+            max_depth: self.max_footer_fb_depth,
+            ..Default::default()
+        };
+        let footer = crate::root_as_footer_with_opts(&verifier_options, &footer_data[..]).map_err(
+            |err| ArrowError::ParseError(format!("Unable to get root as footer: {err:?}")),
+        )?;
+
+        let blocks = footer.recordBatches().ok_or_else(|| {
+            ArrowError::ParseError("Unable to get record batches from IPC Footer".to_string())
+        })?;
+
+        let total_blocks = blocks.len();
+
+        let mut custom_metadata = HashMap::new();
+        if let Some(fb_custom_metadata) = footer.custom_metadata() {
+            for kv in fb_custom_metadata.into_iter() {
+                custom_metadata.insert(
+                    kv.key().unwrap().to_string(),
+                    kv.value().unwrap().to_string(),
+                );
+            }
+        }
+
+        let mut decoder = FileDecoder::new(self.schema, footer.version());
+        if let Some(projection) = self.projection {
+            decoder = decoder.with_projection(projection)
+        }
+
+        // Create an array of optional dictionary value arrays, one per field.
+        if let Some(dictionaries) = footer.dictionaries() {
+            for block in dictionaries {
+                let buf = read_block(&mut reader, block)?;
+                decoder.read_dictionary(block, &buf)?;
+            }
+        }
+
+        Ok(ExternalSchemaFileReader {
+            inner: FileReader {
+                reader,
+                blocks: blocks.iter().copied().collect(),
+                current_block: 0,
+                total_blocks,
+                decoder,
+                custom_metadata,
+            },
+        })
+    }
+}
+
+/// Arrow file reader for IPC files whose schema is supplied externally.
+///
+/// This reader uses the IPC file footer for random access to record batch
+/// blocks, but decodes those blocks using the supplied schema rather than a
+/// schema embedded in the file footer.
+pub struct ExternalSchemaFileReader<R> {
+    inner: FileReader<R>,
+}
+
+impl<R> fmt::Debug for ExternalSchemaFileReader<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {
+        f.debug_struct("ExternalSchemaFileReader<R>")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<R: Read + Seek> ExternalSchemaFileReader<BufReader<R>> {
+    /// Try to create a new external-schema file reader with the reader
+    /// wrapped in a [`BufReader`].
+    ///
+    /// See [`ExternalSchemaFileReader::try_new`] for an unbuffered version.
+    pub fn try_new_buffered(
+        reader: R,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self, ArrowError> {
+        Self::try_new(BufReader::new(reader), schema, projection)
+    }
+}
+
+impl<R: Read + Seek> ExternalSchemaFileReader<R> {
+    /// Try to create a new external-schema file reader.
+    pub fn try_new(
+        reader: R,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self, ArrowError> {
+        let builder = ExternalSchemaFileReaderBuilder::new(schema);
+        let builder = match projection {
+            Some(projection) => builder.with_projection(projection),
+            None => builder,
+        };
+        builder.build(reader)
+    }
+
+    /// Return user defined customized metadata.
+    pub fn custom_metadata(&self) -> &HashMap<String, String> {
+        self.inner.custom_metadata()
+    }
+
+    /// Return the number of batches in the file.
+    pub fn num_batches(&self) -> usize {
+        self.inner.num_batches()
+    }
+
+    /// Return the externally supplied schema.
+    pub fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    /// Seek to a specific array batch.
+    ///
+    /// Sets the current block to the index, allowing random reads.
+    pub fn set_index(&mut self, index: usize) -> Result<(), ArrowError> {
+        self.inner.set_index(index)
+    }
+
+    /// Gets a reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        self.inner.get_ref()
+    }
+
+    /// Gets a mutable reference to the underlying reader.
+    ///
+    /// It is inadvisable to directly read from the underlying reader.
+    pub fn get_mut(&mut self) -> &mut R {
+        self.inner.get_mut()
+    }
+
+    /// Specifies if validation should be skipped when reading data (defaults to `false`).
+    ///
+    /// # Safety
+    ///
+    /// See [`FileDecoder::with_skip_validation`].
+    pub unsafe fn with_skip_validation(mut self, skip_validation: bool) -> Self {
+        self.inner = unsafe { self.inner.with_skip_validation(skip_validation) };
+        self
+    }
+
+    fn maybe_next_arrays(&mut self) -> Result<Option<Vec<ArrayRef>>, ArrowError> {
+        Ok(self.inner.maybe_next()?.map(|batch| {
+            let (_, columns, _) = batch.into_parts();
+            columns
+        }))
+    }
+}
+
+impl<R: Read + Seek> Iterator for ExternalSchemaFileReader<R> {
+    type Item = Result<Vec<ArrayRef>, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.inner.current_block < self.inner.total_blocks {
+            self.maybe_next_arrays().transpose()
+        } else {
+            None
+        }
+    }
+}
+
 /// Read a schema from a single Arrow IPC stream schema message.
 ///
 /// This reads only the first IPC message and expects that message to be a

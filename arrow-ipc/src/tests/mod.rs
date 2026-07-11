@@ -21,5 +21,6 @@ tests rely on functionality that is not public and so they're placed here rather
 than in integration tests or unit tests for a specific module.
 */
 mod delta_dictionary;
+mod external_schema_file;
 mod external_schema_stream;
 mod schema_stream;

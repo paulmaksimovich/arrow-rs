@@ -1563,6 +1563,227 @@ impl<W: Write> RecordBatchWriter for FileWriter<W> {
     }
 }
 
+/// Arrow file writer for IPC files whose schema is supplied externally.
+///
+/// This writer emits the Arrow IPC file magic bytes, dictionary batches, record
+/// batches, and footer block metadata, but does not emit the schema message
+/// normally written near the start of an IPC file and does not store the schema
+/// in the footer.
+pub struct ExternalSchemaFileWriter<W> {
+    /// The object to write to
+    writer: W,
+    /// IPC write options
+    write_options: IpcWriteOptions,
+    /// A reference to the schema, used in validating record batches
+    schema: SchemaRef,
+    /// The number of bytes between each block of bytes, as an offset for random access
+    block_offsets: usize,
+    /// Dictionary blocks that will be written as part of the IPC footer
+    dictionary_blocks: Vec<crate::Block>,
+    /// Record blocks that will be written as part of the IPC footer
+    record_blocks: Vec<crate::Block>,
+    /// Whether the writer footer has been written, and the writer is finished
+    finished: bool,
+    /// Keeps track of dictionaries that have been written
+    dictionary_tracker: DictionaryTracker,
+    /// User level customized metadata
+    custom_metadata: HashMap<String, String>,
+
+    data_gen: IpcDataGenerator,
+
+    ipc_write_context: IpcWriteContext,
+}
+
+impl<W: Write> ExternalSchemaFileWriter<BufWriter<W>> {
+    /// Try to create a new external-schema file writer with the writer
+    /// wrapped in a [`BufWriter`].
+    ///
+    /// See [`ExternalSchemaFileWriter::try_new`] for an unbuffered version.
+    pub fn try_new_buffered(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+        Self::try_new(BufWriter::new(writer), schema)
+    }
+}
+
+impl<W: Write> ExternalSchemaFileWriter<W> {
+    /// Try to create a new external-schema file writer.
+    pub fn try_new(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+        let write_options = IpcWriteOptions::default();
+        Self::try_new_with_options(writer, schema, write_options)
+    }
+
+    /// Try to create a new external-schema file writer with [`IpcWriteOptions`].
+    pub fn try_new_with_options(
+        mut writer: W,
+        schema: &Schema,
+        write_options: IpcWriteOptions,
+    ) -> Result<Self, ArrowError> {
+        ensure_supported_ipc_schema(schema)?;
+
+        let data_gen = IpcDataGenerator::default();
+        // write magic to header aligned on alignment boundary
+        let pad_len = pad_to_alignment(write_options.alignment, super::ARROW_MAGIC.len());
+        let header_size = super::ARROW_MAGIC.len() + pad_len;
+        writer.write_all(&super::ARROW_MAGIC)?;
+        writer.write_all(&PADDING[..pad_len])?;
+
+        let mut dictionary_tracker = DictionaryTracker::new(true);
+        // Seed dictionary tracking exactly like schema encoding does, while
+        // keeping the schema outside of this IPC file.
+        let _encoded_message = data_gen.schema_to_bytes_with_dictionary_tracker(
+            schema,
+            &mut dictionary_tracker,
+            &write_options,
+        );
+
+        Ok(Self {
+            writer,
+            write_options,
+            schema: Arc::new(schema.clone()),
+            block_offsets: header_size,
+            dictionary_blocks: vec![],
+            record_blocks: vec![],
+            finished: false,
+            dictionary_tracker,
+            custom_metadata: HashMap::new(),
+            data_gen,
+            ipc_write_context: IpcWriteContext::default(),
+        })
+    }
+
+    /// Adds a key-value pair to the writer's custom metadata.
+    pub fn write_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.custom_metadata.insert(key.into(), value.into());
+    }
+
+    /// Write a record batch to the file.
+    pub fn write(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
+        if self.finished {
+            return Err(ArrowError::IpcError(
+                "Cannot write record batch to file writer as it is closed".to_string(),
+            ));
+        }
+
+        let meta = self.data_gen.write(
+            batch,
+            &mut self.dictionary_tracker,
+            &self.write_options,
+            &mut self.ipc_write_context,
+            &mut self.writer,
+        )?;
+
+        for (header_len, body_len) in meta.dictionary_block_sizes {
+            let block = crate::Block::new(
+                self.block_offsets as i64,
+                header_len as i32,
+                body_len as i64,
+            );
+            self.dictionary_blocks.push(block);
+            self.block_offsets += header_len + body_len;
+        }
+
+        // add a record block for the footer
+        let block = crate::Block::new(
+            self.block_offsets as i64,
+            meta.padded_header_len as i32,
+            meta.body_len as i64,
+        );
+        self.record_blocks.push(block);
+        self.block_offsets += meta.padded_header_len + meta.body_len;
+        Ok(())
+    }
+
+    /// Write an array batch to the file using the externally supplied schema.
+    pub fn write_arrays(&mut self, columns: Vec<ArrayRef>) -> Result<(), ArrowError> {
+        let batch = RecordBatch::try_new(self.schema.clone(), columns)?;
+        self.write(&batch)
+    }
+
+    /// Write footer and closing tag, then mark the writer as done.
+    pub fn finish(&mut self) -> Result<(), ArrowError> {
+        if self.finished {
+            return Err(ArrowError::IpcError(
+                "Cannot write footer to file writer as it is closed".to_string(),
+            ));
+        }
+
+        // write EOS
+        write_continuation(&mut self.writer, &self.write_options, 0)?;
+
+        let mut fbb = FlatBufferBuilder::new();
+        let dictionaries = fbb.create_vector(&self.dictionary_blocks);
+        let record_batches = fbb.create_vector(&self.record_blocks);
+
+        let fb_custom_metadata = (!self.custom_metadata.is_empty())
+            .then(|| crate::convert::metadata_to_fb(&mut fbb, &self.custom_metadata));
+
+        let root = {
+            let mut footer_builder = crate::FooterBuilder::new(&mut fbb);
+            footer_builder.add_version(self.write_options.metadata_version);
+            footer_builder.add_dictionaries(dictionaries);
+            footer_builder.add_recordBatches(record_batches);
+            if let Some(fb_custom_metadata) = fb_custom_metadata {
+                footer_builder.add_custom_metadata(fb_custom_metadata);
+            }
+            footer_builder.finish()
+        };
+        fbb.finish(root, None);
+        let footer_data = fbb.finished_data();
+        self.writer.write_all(footer_data)?;
+        self.writer
+            .write_all(&(footer_data.len() as i32).to_le_bytes())?;
+        self.writer.write_all(&super::ARROW_MAGIC)?;
+        self.writer.flush()?;
+        self.finished = true;
+
+        Ok(())
+    }
+
+    /// Returns the externally supplied arrow [`SchemaRef`].
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    /// Gets a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Gets a mutable reference to the underlying writer.
+    ///
+    /// It is inadvisable to directly write to the underlying writer.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Flush the underlying writer.
+    ///
+    /// Both the [`BufWriter`] and the underlying writer are flushed.
+    pub fn flush(&mut self) -> Result<(), ArrowError> {
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    /// Unwraps the underlying writer.
+    ///
+    /// The writer is flushed and the file is finished before returning.
+    pub fn into_inner(mut self) -> Result<W, ArrowError> {
+        if !self.finished {
+            self.finish()?;
+        }
+        Ok(self.writer)
+    }
+}
+
+impl<W: Write> RecordBatchWriter for ExternalSchemaFileWriter<W> {
+    fn write(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
+        self.write(batch)
+    }
+
+    fn close(mut self) -> Result<(), ArrowError> {
+        self.finish()
+    }
+}
+
 /// Write a schema as a single Arrow IPC stream schema message.
 ///
 /// This writes only the schema message. It does not write any record batches or
