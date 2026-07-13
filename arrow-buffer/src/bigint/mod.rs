@@ -58,7 +58,17 @@ enum DivRemError {
 
 /// A signed 256-bit integer
 #[allow(non_camel_case_types)]
-#[derive(Copy, Clone, Default, Eq, PartialEq, Hash)]
+#[derive(
+    Copy,
+    Clone,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[repr(C)]
 pub struct i256 {
     low: u128,

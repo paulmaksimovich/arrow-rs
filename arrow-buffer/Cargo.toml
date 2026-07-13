@@ -44,6 +44,7 @@ bytes = { version = "1.4" }
 num-bigint = { version = "0.5.0", default-features = false, features = ["std"] }
 num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
 half = { version = "2.1", default-features = false }
+rkyv = "=0.8.8"
 
 [dev-dependencies]
 criterion = { workspace = true, default-features = false }
@@ -64,4 +65,3 @@ harness = false
 [[bench]]
 name = "mutable_buffer_repeat_slice"
 harness = false
-

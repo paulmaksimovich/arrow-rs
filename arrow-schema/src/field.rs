@@ -22,6 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::datatype::DataType;
+use crate::datatype::ArchivedDataType;
 #[cfg(feature = "canonical_extension_types")]
 use crate::extension::CanonicalExtensionType;
 use crate::schema::SchemaBuilder;
@@ -44,10 +45,25 @@ pub type FieldRef = Arc<Field>;
 ///
 /// Arrow Extension types, are encoded in `Field`s metadata. See
 /// [`Self::try_extension_type`] to retrieve the [`ExtensionType`], if any.
-#[derive(Clone)]
+#[derive(Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(
+    bytecheck(bounds(
+        __C: rkyv::validation::ArchiveContext + rkyv::validation::SharedContext,
+        <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    )),
+    serialize_bounds(
+        __S: rkyv::ser::Writer + rkyv::ser::Sharing + rkyv::ser::Allocator,
+        <__S as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    ),
+    deserialize_bounds(
+        __D: rkyv::de::Pooling,
+        <__D as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    ),
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Field {
     name: String,
+    #[rkyv(omit_bounds)]
     data_type: DataType,
     nullable: bool,
     #[deprecated(
@@ -111,6 +127,13 @@ impl PartialEq for Field {
             && self.data_type == other.data_type
             && self.nullable == other.nullable
             && self.metadata == other.metadata
+    }
+}
+
+impl ArchivedField {
+    /// Returns the archived data type for this field.
+    pub fn data_type(&self) -> &ArchivedDataType {
+        &self.data_type
     }
 }
 

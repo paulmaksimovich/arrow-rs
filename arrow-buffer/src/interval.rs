@@ -65,7 +65,20 @@ use std::ops::Neg;
 /// `IntervalMonthDayNano` of `1 month` will compare as **greater** than a
 /// `IntervalMonthDayNano` of `100 days` because the binary representation of `1 month`
 /// is larger than the binary representation of 100 days.
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(
+    Debug,
+    Default,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[repr(C)]
 pub struct IntervalMonthDayNano {
     /// Number of months
@@ -345,7 +358,20 @@ derive_arith!(
 /// Values of `IntervalDayTime` are compared using their binary representation,
 /// which can lead to surprising results. Please see the description of ordering on
 /// [`IntervalMonthDayNano`] for more details
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(
+    Debug,
+    Default,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[repr(C)]
 pub struct IntervalDayTime {
     /// Number of days

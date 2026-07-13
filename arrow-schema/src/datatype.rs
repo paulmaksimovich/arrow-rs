@@ -91,7 +91,32 @@ use crate::{ArrowError, Field, FieldRef, Fields, UnionFields};
 ///
 /// [`Schema.fbs`]: https://github.com/apache/arrow/blob/main/format/Schema.fbs
 /// [the physical memory layout of Apache Arrow]: https://arrow.apache.org/docs/format/Columnar.html#physical-memory-layout
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(
+    bytecheck(bounds(
+        __C: rkyv::validation::ArchiveContext + rkyv::validation::SharedContext,
+        <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    )),
+    serialize_bounds(
+        __S: rkyv::ser::Writer + rkyv::ser::Sharing + rkyv::ser::Allocator,
+        <__S as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    ),
+    deserialize_bounds(
+        __D: rkyv::de::Pooling,
+        <__D as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source,
+    ),
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DataType {
     /// Null type
@@ -315,34 +340,34 @@ pub enum DataType {
     /// A list of some logical data type with variable length.
     ///
     /// A single List array can store up to [`i32::MAX`] elements in total.
-    List(FieldRef),
+    List(#[rkyv(omit_bounds)] FieldRef),
     /// A list of some logical data type with variable length.
     ///
     /// Logically the same as [`List`], but the internal representation differs in how child
     /// data is referenced, allowing flexibility in how data is layed out.
     ///
     /// [`List`]: Self::List
-    ListView(FieldRef),
+    ListView(#[rkyv(omit_bounds)] FieldRef),
     /// A list of some logical data type with fixed length.
-    FixedSizeList(FieldRef, i32),
+    FixedSizeList(#[rkyv(omit_bounds)] FieldRef, i32),
     /// A list of some logical data type with variable length and 64-bit offsets.
     ///
     /// A single LargeList array can store up to [`i64::MAX`] elements in total.
-    LargeList(FieldRef),
+    LargeList(#[rkyv(omit_bounds)] FieldRef),
     /// A list of some logical data type with variable length and 64-bit offsets.
     ///
     /// Logically the same as [`LargeList`], but the internal representation differs in how child
     /// data is referenced, allowing flexibility in how data is layed out.
     ///
     /// [`LargeList`]: Self::LargeList
-    LargeListView(FieldRef),
+    LargeListView(#[rkyv(omit_bounds)] FieldRef),
     /// A nested datatype that contains a number of sub-fields.
-    Struct(Fields),
+    Struct(#[rkyv(with = crate::FieldsAsVec)] Fields),
     /// A nested datatype that can represent slots of differing types. Components:
     ///
     /// 1. [`UnionFields`]
     /// 2. The type of union (Sparse or Dense)
-    Union(UnionFields, UnionMode),
+    Union(#[rkyv(with = crate::UnionFieldsAsVec)] UnionFields, UnionMode),
     /// A dictionary encoded array (`key_type`, `value_type`), where
     /// each array element is an index of `key_type` into an
     /// associated dictionary of `value_type`.
@@ -353,7 +378,7 @@ pub enum DataType {
     ///
     /// This type mostly used to represent low cardinality string
     /// arrays or a limited set of primitive types as integers.
-    Dictionary(Box<DataType>, Box<DataType>),
+    Dictionary(#[rkyv(omit_bounds)] Box<DataType>, #[rkyv(omit_bounds)] Box<DataType>),
     /// Exact 32-bit width decimal value with precision and scale
     ///
     /// * precision is the total number of digits
@@ -423,7 +448,7 @@ pub enum DataType {
     /// has two children: key type and the second the value type. The names of the
     /// child fields may be respectively "entries", "key", and "value", but this is
     /// not enforced.
-    Map(FieldRef, bool),
+    Map(#[rkyv(omit_bounds)] FieldRef, bool),
     /// A run-end encoding (REE) is a variation of run-length encoding (RLE). These
     /// encodings are well-suited for representing data containing sequences of the
     /// same value, called runs. Each run is represented as a value and an integer giving
@@ -435,11 +460,23 @@ pub enum DataType {
     ///
     /// These child arrays are prescribed the standard names of "run_ends" and "values"
     /// respectively.
-    RunEndEncoded(FieldRef, FieldRef),
+    RunEndEncoded(#[rkyv(omit_bounds)] FieldRef, #[rkyv(omit_bounds)] FieldRef),
 }
 
 /// An absolute length of time in seconds, milliseconds, microseconds or nanoseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimeUnit {
     /// Time in seconds.
@@ -464,7 +501,19 @@ impl std::fmt::Display for TimeUnit {
 }
 
 /// YEAR_MONTH, DAY_TIME, MONTH_DAY_NANO interval in SQL style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IntervalUnit {
     /// Indicates the number of elapsed whole months, stored as 4-byte integers.
@@ -483,7 +532,19 @@ pub enum IntervalUnit {
 }
 
 /// Sparse or Dense union layouts
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Copy,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnionMode {
     /// Sparse union layout

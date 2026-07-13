@@ -317,6 +317,56 @@ impl<'a> IntoIterator for &'a Fields {
     }
 }
 
+/// Archives [`Fields`] through their logical list of field references.
+pub struct FieldsAsVec;
+
+impl rkyv::with::ArchiveWith<Fields> for FieldsAsVec {
+    type Archived = rkyv::vec::ArchivedVec<<FieldRef as rkyv::Archive>::Archived>;
+    type Resolver = rkyv::vec::VecResolver;
+
+    fn resolve_with(
+        field: &Fields,
+        resolver: Self::Resolver,
+        out: rkyv::Place<Self::Archived>,
+    ) {
+        Self::Archived::resolve_from_len(field.len(), resolver, out);
+    }
+}
+
+impl<S> rkyv::with::SerializeWith<Fields, S> for FieldsAsVec
+where
+    FieldRef: rkyv::Serialize<S>,
+    S: rkyv::rancor::Fallible + rkyv::ser::Allocator + rkyv::ser::Writer + ?Sized,
+{
+    fn serialize_with(
+        field: &Fields,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        Self::Archived::serialize_from_iter::<FieldRef, _, S>(
+            field.iter().cloned(),
+            serializer,
+        )
+    }
+}
+
+impl<D> rkyv::with::DeserializeWith<<FieldsAsVec as rkyv::with::ArchiveWith<Fields>>::Archived, Fields, D>
+    for FieldsAsVec
+where
+    <FieldRef as rkyv::Archive>::Archived: rkyv::Deserialize<FieldRef, D>,
+    D: rkyv::rancor::Fallible + ?Sized,
+{
+    fn deserialize_with(
+        field: &<FieldsAsVec as rkyv::with::ArchiveWith<Fields>>::Archived,
+        deserializer: &mut D,
+    ) -> Result<Fields, D::Error> {
+        field
+            .iter()
+            .map(|field| rkyv::Deserialize::deserialize(field, deserializer))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Fields::from)
+    }
+}
+
 /// A cheaply cloneable, owned collection of [`FieldRef`] and their corresponding type ids
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -633,6 +683,64 @@ impl FromIterator<(i8, FieldRef)> for UnionFields {
         Self(iter.into_iter().collect())
     }
 }
+
+/// Archives [`UnionFields`] through their logical list of type id and field pairs.
+pub struct UnionFieldsAsVec;
+
+impl rkyv::with::ArchiveWith<UnionFields> for UnionFieldsAsVec {
+    type Archived = rkyv::vec::ArchivedVec<<UnionFieldEntry as rkyv::Archive>::Archived>;
+    type Resolver = rkyv::vec::VecResolver;
+
+    fn resolve_with(
+        field: &UnionFields,
+        resolver: Self::Resolver,
+        out: rkyv::Place<Self::Archived>,
+    ) {
+        Self::Archived::resolve_from_len(field.len(), resolver, out);
+    }
+}
+
+impl<S> rkyv::with::SerializeWith<UnionFields, S> for UnionFieldsAsVec
+where
+    UnionFieldEntry: rkyv::Serialize<S>,
+    S: rkyv::rancor::Fallible + rkyv::ser::Allocator + rkyv::ser::Writer + ?Sized,
+{
+    fn serialize_with(
+        field: &UnionFields,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        let entries: Vec<_> = field
+            .iter()
+            .map(|(type_id, field)| (type_id, field.clone()))
+            .collect();
+        Self::Archived::serialize_from_slice(entries.as_slice(), serializer)
+    }
+}
+
+impl<D>
+    rkyv::with::DeserializeWith<
+        <UnionFieldsAsVec as rkyv::with::ArchiveWith<UnionFields>>::Archived,
+        UnionFields,
+        D,
+    > for UnionFieldsAsVec
+where
+    <UnionFieldEntry as rkyv::Archive>::Archived:
+        rkyv::Deserialize<UnionFieldEntry, D>,
+    D: rkyv::rancor::Fallible + ?Sized,
+{
+    fn deserialize_with(
+        field: &<UnionFieldsAsVec as rkyv::with::ArchiveWith<UnionFields>>::Archived,
+        deserializer: &mut D,
+    ) -> Result<UnionFields, D::Error> {
+        field
+            .iter()
+            .map(|field| rkyv::Deserialize::deserialize(field, deserializer))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|entries| entries.into_iter().collect())
+    }
+}
+
+type UnionFieldEntry = (i8, FieldRef);
 
 #[cfg(test)]
 mod tests {
