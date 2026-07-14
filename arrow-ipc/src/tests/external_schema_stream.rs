@@ -32,7 +32,7 @@ fn external_schema_stream_round_trip() -> Result<(), ArrowError> {
     let schema = batch.schema();
     let mut bytes = Vec::new();
     {
-        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.as_ref())?;
+        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.clone())?;
         writer.write_arrays(batch.columns().to_vec())?;
         writer.finish()?;
     }
@@ -71,7 +71,7 @@ fn external_schema_stream_round_trip_dictionary_batch() -> Result<(), ArrowError
 
     let mut bytes = Vec::new();
     {
-        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.as_ref())?;
+        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, schema.clone())?;
         writer.write_arrays(batch.columns().to_vec())?;
         writer.finish()?;
     }

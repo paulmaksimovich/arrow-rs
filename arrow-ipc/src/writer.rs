@@ -1599,14 +1599,14 @@ impl<W: Write> ExternalSchemaFileWriter<BufWriter<W>> {
     /// wrapped in a [`BufWriter`].
     ///
     /// See [`ExternalSchemaFileWriter::try_new`] for an unbuffered version.
-    pub fn try_new_buffered(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+    pub fn try_new_buffered(writer: W, schema: SchemaRef) -> Result<Self, ArrowError> {
         Self::try_new(BufWriter::new(writer), schema)
     }
 }
 
 impl<W: Write> ExternalSchemaFileWriter<W> {
     /// Try to create a new external-schema file writer.
-    pub fn try_new(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+    pub fn try_new(writer: W, schema: SchemaRef) -> Result<Self, ArrowError> {
         let write_options = IpcWriteOptions::default();
         Self::try_new_with_options(writer, schema, write_options)
     }
@@ -1614,10 +1614,10 @@ impl<W: Write> ExternalSchemaFileWriter<W> {
     /// Try to create a new external-schema file writer with [`IpcWriteOptions`].
     pub fn try_new_with_options(
         mut writer: W,
-        schema: &Schema,
+        schema: SchemaRef,
         write_options: IpcWriteOptions,
     ) -> Result<Self, ArrowError> {
-        ensure_supported_ipc_schema(schema)?;
+        ensure_supported_ipc_schema(schema.as_ref())?;
 
         let data_gen = IpcDataGenerator::default();
         // write magic to header aligned on alignment boundary
@@ -1630,7 +1630,7 @@ impl<W: Write> ExternalSchemaFileWriter<W> {
         // Seed dictionary tracking exactly like schema encoding does, while
         // keeping the schema outside of this IPC file.
         let _encoded_message = data_gen.schema_to_bytes_with_dictionary_tracker(
-            schema,
+            schema.as_ref(),
             &mut dictionary_tracker,
             &write_options,
         );
@@ -1638,7 +1638,7 @@ impl<W: Write> ExternalSchemaFileWriter<W> {
         Ok(Self {
             writer,
             write_options,
-            schema: Arc::new(schema.clone()),
+            schema,
             block_offsets: header_size,
             dictionary_blocks: vec![],
             record_blocks: vec![],
@@ -2085,7 +2085,7 @@ impl<W: Write> ExternalSchemaStreamWriter<BufWriter<W>> {
     /// wrapped in a [`BufWriter`].
     ///
     /// See [`ExternalSchemaStreamWriter::try_new`] for an unbuffered version.
-    pub fn try_new_buffered(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+    pub fn try_new_buffered(writer: W, schema: SchemaRef) -> Result<Self, ArrowError> {
         Self::try_new(BufWriter::new(writer), schema)
     }
 }
@@ -2096,7 +2096,7 @@ impl<W: Write> ExternalSchemaStreamWriter<W> {
     /// This initializes the same schema-dependent dictionary state as
     /// [`StreamWriter::try_new`], but does not write the schema message to the
     /// underlying stream.
-    pub fn try_new(writer: W, schema: &Schema) -> Result<Self, ArrowError> {
+    pub fn try_new(writer: W, schema: SchemaRef) -> Result<Self, ArrowError> {
         let write_options = IpcWriteOptions::default();
         Self::try_new_with_options(writer, schema, write_options)
     }
@@ -2108,10 +2108,10 @@ impl<W: Write> ExternalSchemaStreamWriter<W> {
     /// message to the underlying stream.
     pub fn try_new_with_options(
         writer: W,
-        schema: &Schema,
+        schema: SchemaRef,
         write_options: IpcWriteOptions,
     ) -> Result<Self, ArrowError> {
-        ensure_supported_ipc_schema(schema)?;
+        ensure_supported_ipc_schema(schema.as_ref())?;
 
         let data_gen = IpcDataGenerator::default();
         let mut dictionary_tracker = DictionaryTracker::new(false);
@@ -2119,13 +2119,13 @@ impl<W: Write> ExternalSchemaStreamWriter<W> {
         // Seed dictionary tracking exactly like schema encoding does, while
         // keeping the schema message outside of this batch stream.
         let _encoded_message = data_gen.schema_to_bytes_with_dictionary_tracker(
-            schema,
+            schema.as_ref(),
             &mut dictionary_tracker,
             &write_options,
         );
 
         Ok(Self {
-            schema: Arc::new(schema.clone()),
+            schema,
             inner: StreamWriter {
                 writer,
                 write_options,

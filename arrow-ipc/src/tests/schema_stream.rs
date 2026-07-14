@@ -48,7 +48,7 @@ fn stream_schema_reader_rejects_record_batch_message() -> Result<(), ArrowError>
     let batch = record_batch!(("a", Int32, [1, 2, 3]))?;
     let mut bytes = Vec::new();
     {
-        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, batch.schema().as_ref())?;
+        let mut writer = ExternalSchemaStreamWriter::try_new(&mut bytes, batch.schema())?;
         writer.write(&batch)?;
         writer.finish()?;
     }

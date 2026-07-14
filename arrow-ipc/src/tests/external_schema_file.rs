@@ -34,7 +34,7 @@ fn external_schema_file_round_trip_random_access() -> Result<(), ArrowError> {
 
     let mut bytes = Vec::new();
     {
-        let mut writer = ExternalSchemaFileWriter::try_new(&mut bytes, schema.as_ref())?;
+        let mut writer = ExternalSchemaFileWriter::try_new(&mut bytes, schema.clone())?;
         writer.write_arrays(batch1.columns().to_vec())?;
         writer.write_arrays(batch2.columns().to_vec())?;
         writer.finish()?;
@@ -83,7 +83,7 @@ fn external_schema_file_round_trip_dictionary_batch() -> Result<(), ArrowError> 
 
     let mut bytes = Vec::new();
     {
-        let mut writer = ExternalSchemaFileWriter::try_new(&mut bytes, schema.as_ref())?;
+        let mut writer = ExternalSchemaFileWriter::try_new(&mut bytes, schema.clone())?;
         writer.write_arrays(batch.columns().to_vec())?;
         writer.finish()?;
     }
